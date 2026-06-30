@@ -108,6 +108,29 @@ const round2 = (n) => Math.round(n * 100) / 100;
 // Stored allocations keep 5 decimals of precision; displays round to 2.
 const round5 = (n) => Math.round(n * 100000) / 100000;
 
+function resolveAlloc({ allocMode, allocNeeds, allocSavings }, amt) {
+  const n = parseFloat(allocNeeds) || 0;
+  const s = parseFloat(allocSavings) || 0;
+  if (allocMode === "val") {
+    const needs$ = Math.max(0, n);
+    const savings$ = Math.max(0, Math.min(s, Math.max(0, amt - needs$)));
+    const wants$ = Math.max(0, amt - needs$ - savings$);
+    const pctOf = (d) => (amt > 0 ? (d / amt) * 100 : 0);
+    return {
+      pct: { Needs: pctOf(needs$), Savings: pctOf(savings$), Wants: pctOf(wants$) },
+      val: { Needs: needs$, Savings: savings$, Wants: wants$ },
+    };
+  }
+  const needsP = Math.max(0, Math.min(100, n));
+  const savingsP = Math.max(0, Math.min(s, Math.max(0, 100 - needsP)));
+  const wantsP = Math.max(0, 100 - needsP - savingsP);
+  const dollarOf = (p) => (p / 100) * amt;
+  return {
+    pct: { Needs: needsP, Savings: savingsP, Wants: wantsP },
+    val: { Needs: dollarOf(needsP), Savings: dollarOf(savingsP), Wants: dollarOf(wantsP) },
+  };
+}
+
 const fmt = (n) =>
   n.toLocaleString("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 });
 
@@ -184,8 +207,9 @@ function BudgetApp({ initial, session }) {
   const [form, setForm] = useState({
     type: "expense", category: "Groceries", amount: "", note: "",
     date: new Date().toISOString().slice(0, 10),
-    alloc: { Needs: 50, Wants: 30, Savings: 20 },
-    allocExact: {},
+    allocMode: "pct",
+    allocNeeds: 50,
+    allocSavings: 20,
   });
 
   // Bumps a counter to retrigger the dancing cat each time income is added.
@@ -256,39 +280,33 @@ function BudgetApp({ initial, session }) {
     if (!amt || amt <= 0) return;
     const base = { id: Date.now(), type: form.type, category: form.category, note: form.note, date: form.date, amount: amt };
     if (form.type === "income") {
-      base.alloc = { ...form.alloc };
+      const resolved = resolveAlloc(form, amt);
+      base.alloc = { Needs: resolved.pct.Needs, Wants: resolved.pct.Wants, Savings: resolved.pct.Savings };
       setCatCheer((c) => c + 1); // dance, kitty!
     }
     setTransactions((prev) => [base, ...prev]);
-    setForm((f) => ({ ...f, amount: "", note: "", alloc: { Needs: 50, Wants: 30, Savings: 20 }, allocExact: {} }));
+    setForm((f) => ({ ...f, amount: "", note: "", allocMode: "pct", allocNeeds: 50, allocSavings: 20 }));
   }
 
-  // Edit a box in the Add form's split (income only).
-  // Rule: the field the user typed is kept EXACTLY as entered. Its correlated
-  // field (the % or $ twin of the same bucket) is derived from it, and Wants
-  // absorbs the remainder. No other editable bucket is touched.
-  function updateFormAlloc(bucket, mode, raw) {
+  // Set the exact number the user typed for Needs or Savings, in the current
+  // unit. Nothing is converted, so the entered value is preserved exactly.
+  function updateFormAlloc(bucket, raw) {
     setForm((f) => {
-      if (bucket === "Wants") return f; // Wants is the auto remainder
-      const value = parseFloat(raw);
-      if (isNaN(value)) return f;
+      if (bucket === "Needs") return { ...f, allocNeeds: raw };
+      if (bucket === "Savings") return { ...f, allocSavings: raw };
+      return f;
+    });
+  }
+
+  // Switch the editing unit. Convert current entries into the new unit ONCE so
+  // the displayed split stays the same when you flip the toggle.
+  function setAllocMode(mode) {
+    setForm((f) => {
+      if (mode === f.allocMode) return f;
       const amt = parseFloat(f.amount) || 0;
-      const pct = mode === "pct" ? value : (amt > 0 ? (value / amt) * 100 : 0);
-      const clampedPct = Math.max(0, Math.min(100, pct));
-
-      const other = bucket === "Needs" ? "Savings" : "Needs";
-      const otherPct = Math.min(f.alloc[other], 100 - clampedPct);
-      const wantsPct = 100 - clampedPct - otherPct;
-
-      const next = { ...f.alloc, [bucket]: clampedPct, [other]: otherPct, Wants: wantsPct };
-
-      const exact = { ...(f.allocExact || {}) };
-      exact[`${bucket}:${mode}`] = raw;
-      delete exact[`${bucket}:${mode === "pct" ? "val" : "pct"}`];
-      delete exact[`${other}:pct`]; delete exact[`${other}:val`];
-      delete exact["Wants:pct"]; delete exact["Wants:val"];
-
-      return { ...f, alloc: next, allocExact: exact };
+      const r = resolveAlloc(f, amt);
+      const src = mode === "val" ? r.val : r.pct;
+      return { ...f, allocMode: mode, allocNeeds: round2(src.Needs), allocSavings: round2(src.Savings) };
     });
   }
 
@@ -411,7 +429,7 @@ function BudgetApp({ initial, session }) {
           <Overview transactions={transactions} spendByCategory={spendByCategory} colorOf={colorOf} onDelete={deleteTransaction} />
         )}
         {tab === "add" && (
-          <AddForm form={form} setForm={setForm} onAdd={addTransaction} incomeCats={incomeCats} expenseCats={expenseCats} onFormAlloc={updateFormAlloc} />
+          <AddForm form={form} setForm={setForm} onAdd={addTransaction} incomeCats={incomeCats} expenseCats={expenseCats} onFormAlloc={updateFormAlloc} onMode={setAllocMode} />
         )}
         {tab === "budgets" && (
           <Budgets budgetStatus={budgetStatus} onUpdate={updateBudget} colorOf={colorOf} />
@@ -516,97 +534,84 @@ function TxRow({ t, onDelete }) {
 
 // Split editor that lives INSIDE the Add form. Needs & Savings editable (% or $),
 // Wants is the locked remainder. Uses the in-progress form amount for $ math.
-function AllocEditor({ alloc, allocExact, amount, onFormAlloc }) {
+function AllocEditor({ form, amount, onFormAlloc, onMode }) {
   const amt = parseFloat(amount) || 0;
-  const exact = allocExact || {};
-  // While a field is focused we hold raw text in `draft` so typing/deleting is
-  // never overridden. We commit on blur or Enter. After commit, the field the
-  // user typed is shown back verbatim from `allocExact` (no recompute drift).
-  const [draft, setDraft] = useState({});
+  const mode = form.allocMode;
+  const resolved = resolveAlloc(form, amt);
+  const [draft, setDraft] = useState({}); // raw text while a box is focused
   const boxStyle = {
     width: "100%", padding: "8px 10px", borderRadius: 8, border: "1px solid var(--border)",
     background: "var(--bg)", color: "var(--text)", fontSize: 14, boxSizing: "border-box",
   };
+  const lockedBox = { ...boxStyle, background: "var(--surface)", color: "var(--text-2)", border: "1px dashed var(--border)" };
 
-  const keyOf = (b, mode) => `${b}:${mode}`;
-  const commit = (b, mode) => {
-    const k = keyOf(b, mode);
-    if (draft[k] === undefined) return;
-    const raw = draft[k];
-    // Empty or partial input commits as 0.
-    onFormAlloc(b, mode, raw === "" || raw === "-" || raw === "." ? "0" : raw);
-    setDraft((d) => { const n = { ...d }; delete n[k]; return n; });
+  const commit = (bucket) => {
+    if (draft[bucket] === undefined) return;
+    const raw = draft[bucket];
+    onFormAlloc(bucket, raw === "" || raw === "-" || raw === "." ? "0" : raw);
+    setDraft((d) => { const n = { ...d }; delete n[bucket]; return n; });
   };
-  // Value shown: live draft if editing → else the user's exact typed value for
-  // this field → else the derived/rounded computed value.
-  const shownPct = (b) => {
-    const k = keyOf(b, "pct");
-    if (draft[k] !== undefined) return draft[k];
-    if (exact[k] !== undefined) return exact[k];
-    return round2(alloc[b]);
+  // What each editable box shows: live draft while typing, else the exact entered
+  // number (form.allocNeeds / form.allocSavings) — never reconverted.
+  const entered = (bucket) => {
+    if (draft[bucket] !== undefined) return draft[bucket];
+    return round2(bucket === "Needs" ? parseFloat(form.allocNeeds) || 0 : parseFloat(form.allocSavings) || 0);
   };
-  const shownVal = (b) => {
-    const k = keyOf(b, "val");
-    if (draft[k] !== undefined) return draft[k];
-    if (exact[k] !== undefined) return exact[k];
-    return round2((alloc[b] / 100) * amt);
-  };
+  const unitSym = mode === "pct" ? "%" : "$";
+  // Display for a bucket in the OTHER (read-only) unit, for reference.
+  const otherUnit = (b) => mode === "pct"
+    ? `$${round2(resolved.val[b]).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+    : `${round2(resolved.pct[b])}%`;
 
   return (
     <div style={{ background: "var(--surface-2)", borderRadius: 10, padding: "12px 12px 14px", border: "1px solid var(--border)" }}>
-      <div style={{ fontSize: 12, color: "var(--text-3)", marginBottom: 10 }}>Allocate this income</div>
-      <div style={{ display: "grid", gridTemplateColumns: "72px 1fr 1fr", gap: 8, alignItems: "center", marginBottom: 6 }}>
-        <span />
-        <span style={{ fontSize: 11, color: "var(--text-3)", textAlign: "center" }}>PERCENT</span>
-        <span style={{ fontSize: 11, color: "var(--text-3)", textAlign: "center" }}>VALUE</span>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 10 }}>
+        <span style={{ fontSize: 12, color: "var(--text-3)" }}>Allocate this income</span>
+        {/* Unit toggle: edit in Percent OR Value — not both. */}
+        <div style={{ display: "flex", gap: 4, background: "var(--bg)", borderRadius: 8, padding: 3 }}>
+          {[["pct", "Percent"], ["val", "Value"]].map(([m, label]) => (
+            <button key={m} onClick={() => onMode(m)}
+              style={{ padding: "5px 12px", borderRadius: 6, border: "none", cursor: "pointer", fontSize: 12, fontWeight: 600,
+                background: mode === m ? "var(--accent)" : "transparent",
+                color: mode === m ? "#0B1120" : "var(--text-3)" }}>
+              {label}
+            </button>
+          ))}
+        </div>
       </div>
+
       {BUCKET_NAMES.map((b) => {
         const locked = b === "Wants";
-        const lockedBox = { ...boxStyle, background: "var(--surface)", color: "var(--text-2)", border: "1px dashed var(--border)" };
         return (
-          <div key={b} style={{ display: "grid", gridTemplateColumns: "72px 1fr 1fr", gap: 8, alignItems: "center", marginBottom: 8 }}>
+          <div key={b} style={{ display: "grid", gridTemplateColumns: "72px 1fr 96px", gap: 8, alignItems: "center", marginBottom: 8 }}>
             <span style={{ fontSize: 13, fontWeight: 600, color: BUCKETS[b].color }}>
               {b}{locked && <span style={{ fontSize: 10, color: "var(--text-4)", fontWeight: 500 }}> · auto</span>}
             </span>
             <div style={{ position: "relative" }}>
+              {mode === "val" && <span style={{ position: "absolute", left: 10, top: "50%", transform: "translateY(-50%)", color: "var(--text-4)", fontSize: 13, pointerEvents: "none" }}>$</span>}
               <input type="number" step="0.01" inputMode="decimal"
-                value={locked ? round2(alloc[b]) : shownPct(b)}
+                value={locked ? round2(mode === "pct" ? resolved.pct[b] : resolved.val[b]) : entered(b)}
                 disabled={locked} readOnly={locked}
-                onChange={(e) => setDraft((d) => ({ ...d, [keyOf(b, "pct")]: e.target.value }))}
-                onBlur={() => commit(b, "pct")}
+                onChange={(e) => setDraft((d) => ({ ...d, [b]: e.target.value }))}
+                onBlur={() => commit(b)}
                 onKeyDown={(e) => { if (e.key === "Enter") e.currentTarget.blur(); }}
-                style={locked ? lockedBox : boxStyle} />
-              <span style={{ position: "absolute", right: 10, top: "50%", transform: "translateY(-50%)", color: "var(--text-4)", fontSize: 13, pointerEvents: "none" }}>%</span>
+                style={{ ...(locked ? lockedBox : boxStyle), paddingLeft: mode === "val" ? 22 : 10 }} />
+              {mode === "pct" && <span style={{ position: "absolute", right: 10, top: "50%", transform: "translateY(-50%)", color: "var(--text-4)", fontSize: 13, pointerEvents: "none" }}>%</span>}
             </div>
-            <div style={{ position: "relative" }}>
-              <span style={{ position: "absolute", left: 10, top: "50%", transform: "translateY(-50%)", color: "var(--text-4)", fontSize: 13, pointerEvents: "none" }}>$</span>
-              <input type="number" step="0.01" inputMode="decimal"
-                value={locked ? round2((alloc[b] / 100) * amt) : shownVal(b)}
-                disabled={locked} readOnly={locked}
-                onChange={(e) => setDraft((d) => ({ ...d, [keyOf(b, "val")]: e.target.value }))}
-                onBlur={() => commit(b, "val")}
-                onKeyDown={(e) => { if (e.key === "Enter") e.currentTarget.blur(); }}
-                style={{ ...(locked ? lockedBox : boxStyle), paddingLeft: 22 }} />
-            </div>
+            {/* read-only reference in the other unit */}
+            <span style={{ fontSize: 12, color: "var(--text-3)", textAlign: "right" }}>{otherUnit(b)}</span>
           </div>
         );
       })}
       <div style={{ fontSize: 12, color: "var(--text-3)", textAlign: "right", marginTop: 4 }}>
-        Wants is the remainder
+        Editing in {mode === "pct" ? "percent" : "dollars"} · Wants is the remainder
       </div>
     </div>
   );
 }
 
-function AddForm({ form, setForm, onAdd, incomeCats, expenseCats, onFormAlloc }) {
-  const set = (k) => (e) => setForm((f) => {
-    if (k === "amount") {
-      const ex = { ...(f.allocExact || {}) };
-      Object.keys(ex).forEach((key) => { if (key.endsWith(":val")) delete ex[key]; });
-      return { ...f, amount: e.target.value, allocExact: ex };
-    }
-    return { ...f, [k]: e.target.value };
-  });
+function AddForm({ form, setForm, onAdd, incomeCats, expenseCats, onFormAlloc, onMode }) {
+  const set = (k) => (e) => setForm((f) => ({ ...f, [k]: e.target.value }));
   const isIncome = form.type === "income";
   const list = isIncome ? incomeCats : expenseCats;
   const inputStyle = { width: "100%", padding: "11px 12px", borderRadius: 10, border: "1px solid var(--border)", background: "var(--surface-2)", color: "var(--text)", fontSize: 14, boxSizing: "border-box" };
@@ -643,7 +648,7 @@ function AddForm({ form, setForm, onAdd, incomeCats, expenseCats, onFormAlloc })
         </label>
 
         {/* The split lives here, only for income. */}
-        {isIncome && <AllocEditor alloc={form.alloc} allocExact={form.allocExact} amount={form.amount} onFormAlloc={onFormAlloc} />}
+        {isIncome && <AllocEditor form={form} amount={form.amount} onFormAlloc={onFormAlloc} onMode={onMode} />}
 
         <label style={{ fontSize: 12, color: "var(--text-3)" }}>Note
           <input value={form.note} onChange={set("note")} placeholder="Optional" style={inputStyle} />
