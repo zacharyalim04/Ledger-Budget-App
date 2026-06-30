@@ -1,0 +1,37 @@
+/* Default (dark) theme tokens. The app wrapper overrides these per selected
+   theme; these defaults cover screens rendered outside it (login, splash). */
+:root {
+  --bg: #0B1120;
+  --surface: #111A2E;
+  --surface-2: #0F1A2E;
+  --border: #1E293B;
+  --text: #E2E8F0;
+  --text-2: #94A3B8;
+  --text-3: #64748B;
+  --text-4: #475569;
+  --accent: #2DD4BF;
+  --accent-grad: linear-gradient(135deg,#2DD4BF,#60A5FA);
+}
+
+* { margin: 0; padding: 0; box-sizing: border-box; }
+
+html, body, #root {
+  height: 100%;
+  background: var(--bg);
+}
+
+body {
+  font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Respect users who prefer reduced motion */
+@media (prefers-reduced-motion: reduce) {
+  * { transition: none !important; animation: none !important; }
+}
+
+input, select, button { font-family: inherit; }
+input:focus-visible, select:focus-visible, button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
