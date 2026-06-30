@@ -267,8 +267,9 @@ function BudgetApp({ initial, session }) {
       if (isNaN(value)) return f;
       const amt = parseFloat(f.amount) || 0;
       const pct = mode === "pct" ? value : (amt > 0 ? (value / amt) * 100 : 0);
+      // Store full-precision percentages; rounding happens only at display time.
+      // (Rounding here caused typed dollar values like 1500 to drift to 1499.84.)
       const next = rebalance(f.alloc, bucket, pct);
-      BUCKET_NAMES.forEach((b) => (next[b] = round2(next[b])));
       return { ...f, alloc: next };
     });
   }
