@@ -105,6 +105,8 @@ function rebalance(alloc, changed, newPct) {
 }
 
 const round2 = (n) => Math.round(n * 100) / 100;
+// Stored allocations keep 5 decimals of precision; displays round to 2.
+const round5 = (n) => Math.round(n * 100000) / 100000;
 
 const fmt = (n) =>
   n.toLocaleString("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 });
@@ -267,9 +269,10 @@ function BudgetApp({ initial, session }) {
       if (isNaN(value)) return f;
       const amt = parseFloat(f.amount) || 0;
       const pct = mode === "pct" ? value : (amt > 0 ? (value / amt) * 100 : 0);
-      // Store full-precision percentages; rounding happens only at display time.
-      // (Rounding here caused typed dollar values like 1500 to drift to 1499.84.)
+      // Store percentages at 5-decimal precision (displays round to 2). This keeps
+      // typed dollar values exact when shown back, with no cent drift.
       const next = rebalance(f.alloc, bucket, pct);
+      BUCKET_NAMES.forEach((b) => (next[b] = round5(next[b])));
       return { ...f, alloc: next };
     });
   }
