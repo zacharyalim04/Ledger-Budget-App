@@ -185,6 +185,7 @@ function BudgetApp({ initial, session }) {
     type: "expense", category: "Groceries", amount: "", note: "",
     date: new Date().toISOString().slice(0, 10),
     alloc: { Needs: 50, Wants: 30, Savings: 20 },
+    allocExact: {},
   });
 
   // Bumps a counter to retrigger the dancing cat each time income is added.
@@ -259,21 +260,35 @@ function BudgetApp({ initial, session }) {
       setCatCheer((c) => c + 1); // dance, kitty!
     }
     setTransactions((prev) => [base, ...prev]);
-    setForm((f) => ({ ...f, amount: "", note: "", alloc: { Needs: 50, Wants: 30, Savings: 20 } }));
+    setForm((f) => ({ ...f, amount: "", note: "", alloc: { Needs: 50, Wants: 30, Savings: 20 }, allocExact: {} }));
   }
 
-  // Edit a box in the Add form's split (income only); auto-balance with Wants leftover.
+  // Edit a box in the Add form's split (income only).
+  // Rule: the field the user typed is kept EXACTLY as entered. Its correlated
+  // field (the % or $ twin of the same bucket) is derived from it, and Wants
+  // absorbs the remainder. No other editable bucket is touched.
   function updateFormAlloc(bucket, mode, raw) {
     setForm((f) => {
+      if (bucket === "Wants") return f; // Wants is the auto remainder
       const value = parseFloat(raw);
       if (isNaN(value)) return f;
       const amt = parseFloat(f.amount) || 0;
       const pct = mode === "pct" ? value : (amt > 0 ? (value / amt) * 100 : 0);
-      // Store percentages at 5-decimal precision (displays round to 2). This keeps
-      // typed dollar values exact when shown back, with no cent drift.
-      const next = rebalance(f.alloc, bucket, pct);
-      BUCKET_NAMES.forEach((b) => (next[b] = round5(next[b])));
-      return { ...f, alloc: next };
+      const clampedPct = Math.max(0, Math.min(100, pct));
+
+      const other = bucket === "Needs" ? "Savings" : "Needs";
+      const otherPct = Math.min(f.alloc[other], 100 - clampedPct);
+      const wantsPct = 100 - clampedPct - otherPct;
+
+      const next = { ...f.alloc, [bucket]: clampedPct, [other]: otherPct, Wants: wantsPct };
+
+      const exact = { ...(f.allocExact || {}) };
+      exact[`${bucket}:${mode}`] = raw;
+      delete exact[`${bucket}:${mode === "pct" ? "val" : "pct"}`];
+      delete exact[`${other}:pct`]; delete exact[`${other}:val`];
+      delete exact["Wants:pct"]; delete exact["Wants:val"];
+
+      return { ...f, alloc: next, allocExact: exact };
     });
   }
 
@@ -501,11 +516,12 @@ function TxRow({ t, onDelete }) {
 
 // Split editor that lives INSIDE the Add form. Needs & Savings editable (% or $),
 // Wants is the locked remainder. Uses the in-progress form amount for $ math.
-function AllocEditor({ alloc, amount, onFormAlloc }) {
+function AllocEditor({ alloc, allocExact, amount, onFormAlloc }) {
   const amt = parseFloat(amount) || 0;
+  const exact = allocExact || {};
   // While a field is focused we hold raw text in `draft` so typing/deleting is
-  // never overridden by the live rebalance. We commit on blur or Enter.
-  // draft key looks like "Needs:pct" or "Savings:val".
+  // never overridden. We commit on blur or Enter. After commit, the field the
+  // user typed is shown back verbatim from `allocExact` (no recompute drift).
   const [draft, setDraft] = useState({});
   const boxStyle = {
     width: "100%", padding: "8px 10px", borderRadius: 8, border: "1px solid var(--border)",
@@ -521,14 +537,19 @@ function AllocEditor({ alloc, amount, onFormAlloc }) {
     onFormAlloc(b, mode, raw === "" || raw === "-" || raw === "." ? "0" : raw);
     setDraft((d) => { const n = { ...d }; delete n[k]; return n; });
   };
-  // Value shown: the in-progress draft if editing, else the computed number.
+  // Value shown: live draft if editing → else the user's exact typed value for
+  // this field → else the derived/rounded computed value.
   const shownPct = (b) => {
     const k = keyOf(b, "pct");
-    return draft[k] !== undefined ? draft[k] : round2(alloc[b]);
+    if (draft[k] !== undefined) return draft[k];
+    if (exact[k] !== undefined) return exact[k];
+    return round2(alloc[b]);
   };
   const shownVal = (b) => {
     const k = keyOf(b, "val");
-    return draft[k] !== undefined ? draft[k] : round2((alloc[b] / 100) * amt);
+    if (draft[k] !== undefined) return draft[k];
+    if (exact[k] !== undefined) return exact[k];
+    return round2((alloc[b] / 100) * amt);
   };
 
   return (
@@ -578,7 +599,14 @@ function AllocEditor({ alloc, amount, onFormAlloc }) {
 }
 
 function AddForm({ form, setForm, onAdd, incomeCats, expenseCats, onFormAlloc }) {
-  const set = (k) => (e) => setForm((f) => ({ ...f, [k]: e.target.value }));
+  const set = (k) => (e) => setForm((f) => {
+    if (k === "amount") {
+      const ex = { ...(f.allocExact || {}) };
+      Object.keys(ex).forEach((key) => { if (key.endsWith(":val")) delete ex[key]; });
+      return { ...f, amount: e.target.value, allocExact: ex };
+    }
+    return { ...f, [k]: e.target.value };
+  });
   const isIncome = form.type === "income";
   const list = isIncome ? incomeCats : expenseCats;
   const inputStyle = { width: "100%", padding: "11px 12px", borderRadius: 10, border: "1px solid var(--border)", background: "var(--surface-2)", color: "var(--text)", fontSize: 14, boxSizing: "border-box" };
@@ -615,7 +643,7 @@ function AddForm({ form, setForm, onAdd, incomeCats, expenseCats, onFormAlloc })
         </label>
 
         {/* The split lives here, only for income. */}
-        {isIncome && <AllocEditor alloc={form.alloc} amount={form.amount} onFormAlloc={onFormAlloc} />}
+        {isIncome && <AllocEditor alloc={form.alloc} allocExact={form.allocExact} amount={form.amount} onFormAlloc={onFormAlloc} />}
 
         <label style={{ fontSize: 12, color: "var(--text-3)" }}>Note
           <input value={form.note} onChange={set("note")} placeholder="Optional" style={inputStyle} />
