@@ -207,9 +207,9 @@ function BudgetApp({ initial, session }) {
   const [form, setForm] = useState({
     type: "expense", category: "Groceries", amount: "", note: "",
     date: new Date().toISOString().slice(0, 10),
-    allocMode: "pct",
-    allocNeeds: 50,
-    allocSavings: 20,
+    allocMode: "val",
+    allocNeeds: 0,
+    allocSavings: 0,
   });
 
   // Bumps a counter to retrigger the dancing cat each time income is added.
@@ -285,7 +285,7 @@ function BudgetApp({ initial, session }) {
       setCatCheer((c) => c + 1); // dance, kitty!
     }
     setTransactions((prev) => [base, ...prev]);
-    setForm((f) => ({ ...f, amount: "", note: "", allocMode: "pct", allocNeeds: 50, allocSavings: 20 }));
+    setForm((f) => ({ ...f, amount: "", note: "", allocMode: "val", allocNeeds: 0, allocSavings: 0 }));
   }
 
   // Set the exact number the user typed for Needs or Savings, in the current
